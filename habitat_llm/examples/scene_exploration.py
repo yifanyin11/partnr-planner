@@ -60,8 +60,8 @@ def run_planner():
     ]
 
     EPISODE_OVERRIDES = [
-        # "+episode_indices=[2,87,370,444,515,590,435,390,555,50,452,355]"
-        "+episode_indices=[2]"
+        "+episode_indices=[2,87,370,444,515,590,435,390,555,50,452,355]"
+        # "+episode_indices=[2]"
     ]  # USE FOR VAL SCENES
 
     # Setup config
@@ -162,6 +162,9 @@ def run_planner():
                     )
                 except:
                     break
+                # obs, reward, done, info = env_interface.step(
+                #     low_level_action, room_name=current_room.name
+                # )
                 # Refresh observations
                 observations = env_interface.parse_observations(obs)
                 # Store third person frames for generating video
@@ -173,6 +176,7 @@ def run_planner():
                     print(f"\tResponse: {response}")
                     hl_action_done = True
             env_interface.save_accumulated_descr(room_name=current_room.name)
+            env_interface.save_world_graph(room_name=current_room.name)
             print(
                 f"\tCompleted high-level action: {hl_action_name} on {hl_action_input}"
             )

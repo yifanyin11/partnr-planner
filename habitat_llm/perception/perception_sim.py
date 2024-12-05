@@ -631,8 +631,9 @@ class PerceptionSim(Perception):
         obs,
         agent_uids,
         save_object_masks: bool = False,
-        mask_ratio_thresh: float = 0.0005,
+        mask_ratio_thresh: float = 0.0004,
         depth_thresh: float = 0.9,
+        depth_close_thresh: float = 0.1,
     ):
         """
         This method uses the instance segmentation output to
@@ -703,7 +704,7 @@ class PerceptionSim(Perception):
                     else:
                         mean_depth = float("inf")
                     # Apply filters
-                    if mask_ratio >= mask_ratio_thresh and mean_depth <= depth_thresh:
+                    if (mask_ratio >= mask_ratio_thresh and mean_depth <= depth_thresh) or (mean_depth <= depth_close_thresh):
                         obj = get_obj_from_id(self.sim, obj_id)
                         if obj is not None:
                             valid_handles.add(obj.handle)

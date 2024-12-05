@@ -766,6 +766,21 @@ class EnvironmentInterface:
                     with open(output_file_path, "w") as file:
                         file.write(self._format_world_description(accumulated_desc))
 
+    def save_world_graph(self, room_name=""):
+        """
+        This method saves the world graph for the current episode
+        """
+        if self.save_trajectory and self.trajectory_agent_names is not None:
+            for curr_agent, _camera_source in zip(
+                self.trajectory_agent_names, self.conf.trajectory.camera_prefixes
+            ):
+                output_path = os.path.join(self.trajectory_save_paths[curr_agent], room_name)
+                os.makedirs(output_path, exist_ok=True)
+                output_path = os.path.join(output_path, "world_graph.npy")
+
+                # Save the world graph using np
+                np.save(output_path, self.full_world_graph, allow_pickle=True)
+
     def _parse_world_description(self, description_text):
         """
         Parses a world description text into a structured dictionary.
@@ -959,6 +974,79 @@ class EnvironmentInterface:
                 "w",
             ) as file:
                 file.write(desc)
+
+            # save states of all objects and furnitures at this step (full obs)
+            all_furnitures = self.full_world_graph.get_all_furnitures()
+            os.makedirs(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent], room_name, "all_furnitures"
+                ),
+                exist_ok=True,
+            )
+
+            np.save(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent],
+                    room_name,
+                    "all_furnitures",
+                    f"{self._trajectory_idx}.npy",
+                ),
+                all_furnitures,
+            )
+
+            all_objects = self.full_world_graph.get_all_objects()
+            os.makedirs(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent], room_name, "all_objects"
+                ),
+                exist_ok=True,
+            )
+
+            np.save(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent],
+                    room_name,
+                    "all_objects",
+                    f"{self._trajectory_idx}.npy",
+                ),
+                all_objects,
+            )
+            
+            # save world graph for this step
+            os.makedirs(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent], room_name, "world_graph"
+                ),
+                exist_ok=True,
+            )
+
+            np.save(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent],
+                    room_name,
+                    "world_graph",
+                    f"{self._trajectory_idx}.npy",
+                ),
+                self.full_world_graph,
+            )
+
+            # save partial world graph for this step
+            os.makedirs(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent], room_name, "partial_world_graph"
+                ),
+                exist_ok=True,
+            )
+
+            np.save(
+                os.path.join(
+                    self.trajectory_save_paths[curr_agent],
+                    room_name,
+                    "partial_world_graph",
+                    f"{self._trajectory_idx}.npy",
+                ),
+                self.world_graph_descr[self.conf.robot_agent_uid],
+            )
 
             self._trajectory_idx += 1
 
