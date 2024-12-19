@@ -15,6 +15,7 @@ import habitat
 import imageio
 import numpy as np
 import torch
+import shutil
 from habitat_baselines.common.obs_transformers import (
     apply_obs_transforms_batch,
     apply_obs_transforms_obs_space,
@@ -728,6 +729,8 @@ class EnvironmentInterface:
                 input_path = os.path.join(
                     self.trajectory_save_paths[curr_agent], room_name, "world_desc"
                 )
+                if not os.path.exists(input_path):
+                    continue
                 output_path = os.path.join(
                     self.trajectory_save_paths[curr_agent],
                     room_name,
@@ -738,8 +741,11 @@ class EnvironmentInterface:
                 accumulated_desc = {"Furniture": {}, "Objects": {}}
 
                 # Loop through all description files sorted by index
+                files = os.listdir(input_path)
+                if len(files) == 0:
+                    continue
                 desc_files = sorted(
-                    os.listdir(input_path), key=lambda x: int(os.path.splitext(x)[0])
+                    files, key=lambda x: int(os.path.splitext(x)[0])
                 )
 
                 for file_name in desc_files:
@@ -775,7 +781,12 @@ class EnvironmentInterface:
                 self.trajectory_agent_names, self.conf.trajectory.camera_prefixes
             ):
                 output_path = os.path.join(self.trajectory_save_paths[curr_agent], room_name)
-                os.makedirs(output_path, exist_ok=True)
+                if not os.path.exists(output_path):
+                    continue
+                elif not os.path.exists(os.path.join(output_path, "rgb")):
+                    # remove the rgb directory
+                    shutil.rmtree(output_path)
+                    continue
                 output_path = os.path.join(output_path, "world_graph.npy")
 
                 # Save the world graph using np
@@ -817,10 +828,29 @@ class EnvironmentInterface:
     def save_trajectory_step(self, obs, room_name=""):
         # save data from this time-step; for current episode_id and scene
         # also save the episode description in folder
+        flag_0 = False
+        flag_1 = False
         if self.save_trajectory and self.trajectory_agent_names is not None:
             for curr_agent, camera_source in zip(
                 self.trajectory_agent_names, self.conf.trajectory.camera_prefixes
             ):
+                if curr_agent == "agent_0" or curr_agent == "main_agent":
+                    agent_uid = self.robot_agent_uid
+                elif curr_agent == "agent_1":
+                    agent_uid = self.human_agent_uid
+                else:
+                    raise ValueError(
+                        f"Expected agent names to be 'agent_0' or 'agent_1', got {curr_agent}"
+                    )
+
+                if (curr_agent == "agent_0" or curr_agent == "main_agent") and self.full_world_graph.get_room_for_entity(self.full_world_graph.get_spot_robot()).name != room_name:
+                    flag_0 = True
+                    continue
+
+                if curr_agent == "agent_1" and self.full_world_graph.get_room_for_entity(self.full_world_graph.get_human()).name != room_name:
+                    flag_1 = True
+                    continue
+                    
                 if "rgb" in self.save_options:
                     if self._single_agent_mode:
                         rgb = obs[f"{camera_source}_rgb"]
@@ -953,20 +983,35 @@ class EnvironmentInterface:
                 # )
                 # inv_T = self.sim._default_agent.scene_node.transformation
                 # fixed_pose = inv_T @ fixed_pose
+            
+            agent = self.conf.trajectory.agent_names[0]
+
+            if (agent == "agent_0" or agent == "main_agent"):
+                if flag_0:
+                    return
+                agent_uid = self.robot_agent_uid
+            elif agent == "agent_1":
+                if flag_1:
+                    return
+                agent_uid = self.human_agent_uid
+            else:
+                raise ValueError(
+                    f"Expected agent names to be 'agent_0' or 'agent_1', got {agent}"
+                )
             # save the world desciption for this step
-            desc = self.world_graph_descr[self.conf.robot_agent_uid].get_world_descr()
-            self.trajectory_save_paths[curr_agent], room_name, self._trajectory_idx
+            desc = self.world_graph_descr[agent_uid].get_world_descr()
+            self.trajectory_save_paths[agent], room_name, self._trajectory_idx
 
             os.makedirs(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent], room_name, "world_desc"
+                    self.trajectory_save_paths[agent], room_name, "world_desc"
                 ),
                 exist_ok=True,
             )
 
             with open(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent],
+                    self.trajectory_save_paths[agent],
                     room_name,
                     "world_desc",
                     f"{self._trajectory_idx}.txt",
@@ -979,14 +1024,14 @@ class EnvironmentInterface:
             all_furnitures = self.full_world_graph.get_all_furnitures()
             os.makedirs(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent], room_name, "all_furnitures"
+                    self.trajectory_save_paths[agent], room_name, "all_furnitures"
                 ),
                 exist_ok=True,
             )
 
             np.save(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent],
+                    self.trajectory_save_paths[agent],
                     room_name,
                     "all_furnitures",
                     f"{self._trajectory_idx}.npy",
@@ -997,14 +1042,14 @@ class EnvironmentInterface:
             all_objects = self.full_world_graph.get_all_objects()
             os.makedirs(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent], room_name, "all_objects"
+                    self.trajectory_save_paths[agent], room_name, "all_objects"
                 ),
                 exist_ok=True,
             )
 
             np.save(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent],
+                    self.trajectory_save_paths[agent],
                     room_name,
                     "all_objects",
                     f"{self._trajectory_idx}.npy",
@@ -1015,14 +1060,14 @@ class EnvironmentInterface:
             # save world graph for this step
             os.makedirs(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent], room_name, "world_graph"
+                    self.trajectory_save_paths[agent], room_name, "world_graph"
                 ),
                 exist_ok=True,
             )
 
             np.save(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent],
+                    self.trajectory_save_paths[agent],
                     room_name,
                     "world_graph",
                     f"{self._trajectory_idx}.npy",
@@ -1033,19 +1078,19 @@ class EnvironmentInterface:
             # save partial world graph for this step
             os.makedirs(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent], room_name, "partial_world_graph"
+                    self.trajectory_save_paths[agent], room_name, "partial_world_graph"
                 ),
                 exist_ok=True,
             )
 
             np.save(
                 os.path.join(
-                    self.trajectory_save_paths[curr_agent],
+                    self.trajectory_save_paths[agent],
                     room_name,
                     "partial_world_graph",
                     f"{self._trajectory_idx}.npy",
                 ),
-                self.world_graph_descr[self.conf.robot_agent_uid],
+                self.world_graph_descr[agent_uid],
             )
 
             self._trajectory_idx += 1

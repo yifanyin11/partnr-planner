@@ -52,7 +52,8 @@ def run_planner():
         # "habitat.dataset.scenes_dir=data/replica_cad/",
     ]
     SENSOR_OVERRIDES = [
-        "habitat.simulator.agents.main_agent.sim_sensors.jaw_depth_sensor.normalize_depth=False"
+        "habitat.simulator.agents.agent_0.sim_sensors.jaw_depth_sensor.normalize_depth=False",
+        "habitat.simulator.agents.agent_1.sim_sensors.head_depth_sensor.normalize_depth=False"
     ]
     LLM_OVERRIDES = [
         "llm@evaluation.planner.plan_config.llm=mock",
@@ -61,17 +62,17 @@ def run_planner():
         "evaluation.save_video=True",
         "evaluation.output_dir=./outputs",
         "trajectory.save=True",
-        "trajectory.agent_names=[main_agent]",
+        "trajectory.agent_names=[agent_1]",
     ]
 
     EPISODE_OVERRIDES = [
         # "+episode_indices=[2,87,370,444,515,590,435,390,555,50,452,355]"
-        "+episode_indices=[2, 87]"
+        "+episode_indices=[2]"
     ]  # USE FOR VAL SCENES
 
     # Setup config
     config_base = get_config(
-        "examples/single_agent_scene_mapping.yaml",
+        "examples/multi_agent_scene_mapping.yaml",
         overrides=DATASET_OVERRIDES
         + SENSOR_OVERRIDES
         + LLM_OVERRIDES
@@ -92,11 +93,11 @@ def run_planner():
 
     # Initialize the environment interface for the agent
     dataset = CollaborationDatasetV0(config.habitat.dataset)
-    # if config.get("episode_indices", None) is not None:
-    #     episode_subset = [dataset.episodes[x] for x in config.episode_indices]
-    #     dataset = CollaborationDatasetV0(
-    #         config=config.habitat.dataset, episodes=episode_subset
-    #     )
+    if config.get("episode_indices", None) is not None:
+        episode_subset = [dataset.episodes[x] for x in config.episode_indices]
+        dataset = CollaborationDatasetV0(
+            config=config.habitat.dataset, episodes=episode_subset
+        )
     env_interface = EnvironmentInterface(config, dataset=dataset)
 
     # Instantiate the agent planner
@@ -154,24 +155,25 @@ def run_planner():
                 # Get response and/or low level actions
                 env_interface.reset_world_graph()
                 low_level_action, response = eval_runner.planner.agents[
-                    0
+                    1
                 ].process_high_level_action(
                     hl_action_name, hl_action_input, observations
                 )
-                low_level_action = {0: low_level_action}
-                try:
-                    obs, reward, done, info = env_interface.step(
-                        low_level_action, room_name=current_room.name
-                    )
-                except:
-                    break
-                # obs, reward, done, info = env_interface.step(
-                #     low_level_action, room_name=current_room.name
-                # )
+                # import ipdb; ipdb.set_trace()
+                low_level_action = {1: low_level_action}
+                # try:
+                #     obs, reward, done, info = env_interface.step(
+                #         low_level_action, room_name=current_room.name
+                #     )
+                # except:
+                #     break
+                obs, reward, done, info = env_interface.step(
+                    low_level_action, room_name=current_room.name
+                )
                 # Refresh observations
                 observations = env_interface.parse_observations(obs)
                 # Store third person frames for generating video
-                hl_dict = {0: (hl_action_name, hl_action_input)}
+                hl_dict = {1: (hl_action_name, hl_action_input)}
                 eval_runner.dvu._store_for_video(observations, hl_dict)
 
                 # figure out how to get completion signal
@@ -184,8 +186,8 @@ def run_planner():
                 f"\tCompleted high-level action: {hl_action_name} on {hl_action_input}"
             )
 
-        if eval_runner.dvu.frames:
-            eval_runner.dvu._make_video(play=False, postfix=scene_id)
+        # if eval_runner.dvu.frames:
+        #     eval_runner.dvu._make_video(play=False, postfix=scene_id)
         processed_scenes.add(str(scene_id))
     env_interface.sim.close()
 

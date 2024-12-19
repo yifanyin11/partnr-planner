@@ -4,6 +4,12 @@ import shutil
 import random
 from math import pi, acos
 from numpy.linalg import norm
+import sys
+import pathlib
+
+ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
+sys.path.append(ROOT_DIR)
+os.chdir(ROOT_DIR)
 
 # Constants
 ANGLE_THRESHOLD = {"on the left": pi / 4, "on the right": pi / 4, "on the back of self": pi / 4, "on the back of ref": pi / 4}
@@ -425,7 +431,8 @@ def generate_segments(data_root, new_root):
                                 stats[relationship] += 1
                                 # Save the segment and description
                                 segment_dir = os.path.join(new_root, episode_id, "main_agent", room_name, f"{furn_name}_{obj_name}_{relationship.replace(' ', '_')}")
-                                pre_length = random.randint(5, 50)
+                                # pre_length = random.randint(5, 50)
+                                pre_length = 0
                                 start_frame_idx = max(furn_discovery_step-pre_length, first_idx)
                                 segment_frames = list(range(start_frame_idx, disappear_step + 1))
                                 segment_data = construct_segment_data(segment_frames, room_path)
@@ -458,7 +465,8 @@ def generate_segments(data_root, new_root):
                             stats["next to"] += 1
                             # Save segment
                             segment_dir = os.path.join(new_root, episode_id, "main_agent", room_name, f"{obj_name1}_{obj_name2}_next_to")
-                            pre_length = random.randint(5, 50)
+                            # pre_length = random.randint(5, 50)
+                            pre_length = 0
                             start_frame_idx = max(discovery_step2-pre_length, first_idx)
                             segment_frames = list(range(start_frame_idx, disappear_step1 + 1))
                             segment_data = construct_segment_data(segment_frames, room_path)
@@ -499,7 +507,8 @@ def generate_segments(data_root, new_root):
                                 # Save segment
                                 segment_dir = os.path.join(new_root, episode_id, "main_agent", room_name, f"{furn_name1}_{furn_name2}_{relationship.replace(' ', '_')}")
                                 if relationship not in ["on the left", "on the right", "on the back of self", "on the back of ref"]:
-                                    pre_length = random.randint(5, 50)
+                                    # pre_length = random.randint(5, 50)
+                                    pre_length = 0
                                     start_frame_idx = max(discovery_step2-pre_length, first_idx)
                                 else:
                                     start_frame_idx = discovery_step2

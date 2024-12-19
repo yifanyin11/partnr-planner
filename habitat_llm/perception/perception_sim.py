@@ -16,6 +16,7 @@ from habitat.datasets.rearrange.samplers.receptacle import Receptacle as HabRece
 from habitat.sims.habitat_simulator.sim_utilities import (
     get_obj_from_handle,
     get_obj_from_id,
+    get_bb_for_object_id,
     on_floor,
 )
 from magnum import Vector3
@@ -42,6 +43,78 @@ from habitat_llm.world_model.world_graph import WorldGraph, flip_edge
 HUMAN_SEMANTIC_ID = 100  # special semantic ID reserved for humanoids
 UNKNOWN_SEMANTIC_ID = 0  # special semantic ID reserved for unknown object class
 
+def camera_spec_to_intrinsics(camera_spec):
+    def f(length, fov):
+        return length / (2.0 * np.tan(hfov / 2.0))
+
+    hfov = np.deg2rad(float(camera_spec.hfov))
+    image_height, image_width = np.array(camera_spec.resolution).tolist()
+    fx = f(image_height, hfov)
+    fy = f(image_width, hfov)
+    cx = image_height / 2.0
+    cy = image_width / 2.0
+    intrinsics_matrix = np.array([
+        [fx, 0, cx],
+        [0, fy, cy],
+        [0, 0, 1]
+    ])
+    return intrinsics_matrix
+
+def compute_2d_bbox_from_aabb(local_aabb, global_transform, intrinsics, extrinsics):
+    """
+    Compute the 2D projected bounding box and its area for an object's AABB.
+
+    Parameters:
+        local_aabb (_magnum.Range3D): AABB of the object with properties like min and max.
+        global_transform (ndarray): 4x4 transformation matrix to world coordinates.
+        intrinsics (ndarray): 3x3 camera intrinsics matrix.
+        extrinsics (ndarray): 4x4 camera extrinsics matrix.
+
+    Returns:
+        dict: Contains the bounding box coordinates (x_min, y_min, x_max, y_max) and area.
+    """
+    def project_3d_to_2d(points_3d, intrinsics, extrinsics):
+        """Projects 3D points to 2D image plane."""
+        # Transform points from world to camera coordinates
+        points_camera = (extrinsics @ (np.hstack((points_3d, np.ones((points_3d.shape[0], 1))))).T).T
+        points_camera = points_camera[:, :3]  # Discard homogeneous coordinate
+        # Project points from camera to image plane
+        points_image = (intrinsics @ points_camera.T).T
+        points_image = points_image[:, :2] / points_image[:, 2:]  # Normalize by depth
+        return points_image
+
+    # Get corners of the local AABB
+    corners_local = np.array([
+        np.array(local_aabb.front_bottom_left),
+        np.array(local_aabb.front_bottom_right),
+        np.array(local_aabb.front_top_left),
+        np.array(local_aabb.front_top_right),
+        np.array(local_aabb.back_bottom_left),
+        np.array(local_aabb.back_bottom_right),
+        np.array(local_aabb.back_top_left),
+        np.array(local_aabb.back_top_right),
+    ])
+    # Transform corners to global coordinates
+    corners_global = (global_transform @ (np.hstack((corners_local, np.ones((corners_local.shape[0], 1))))).T).T[:, :3]
+    # Project to 2D
+    projected_2d_points = project_3d_to_2d(corners_global, intrinsics, extrinsics)
+
+    # Compute the bounding box
+    x_min, y_min = projected_2d_points.min(axis=0)
+    x_max, y_max = projected_2d_points.max(axis=0)
+
+    bbox_width = x_max - x_min
+    bbox_height = y_max - y_min
+
+    bbox_area = bbox_width * bbox_height
+
+    return {
+        "x_min": x_min,
+        "y_min": y_min,
+        "x_max": x_max,
+        "y_max": y_max,
+        "area": bbox_area
+    }
 
 class PerceptionSim(Perception):
     """
@@ -631,9 +704,8 @@ class PerceptionSim(Perception):
         obs,
         agent_uids,
         save_object_masks: bool = False,
-        mask_ratio_thresh: float = 0.0004,
-        depth_thresh: float = 0.9,
-        depth_close_thresh: float = 0.1,
+        bbox_ratio_thresh: float = 0.5,
+        depth_thresh: float = 8.0,
     ):
         """
         This method uses the instance segmentation output to
@@ -658,10 +730,15 @@ class PerceptionSim(Perception):
                     raise ValueError(
                         f"Could not find a valid panoptic sensor for agent uid: {uid}"
                     )
+                camera_source = "articulated_agent_arm"
             elif uid == "1":
                 key = f"agent_{uid}_head_panoptic"
                 depth_key = f"agent_{uid}_head_depth"
-                continue
+                camera_source = "head"
+            else:
+                raise ValueError(f"Invalid agent uid: {uid}")
+        
+            curr_agent = f"agent_{uid}"
             # try:
             if key in obs:
                 unique_obj_ids = np.unique(obs[key])
@@ -684,31 +761,65 @@ class PerceptionSim(Perception):
                 )
                 # import ipdb; ipdb.set_trace()
                 height, width = obs[key].shape[:2]
-                total_pixels = height * width
 
-                # Filter objects based on mask size and depth
+                # Filter objects based on bbox ratio and depth
                 valid_handles = set()
                 for obj_id in unique_obj_ids:
+                    obj = get_obj_from_id(self.sim, obj_id)
+                    if obj is None:
+                        continue
                     # Create a mask for the current object
                     obj_mask = (segmentation_map == (obj_id + 100)).astype(bool)
 
                     if obj_mask.ndim != 2:
                         obj_mask = obj_mask.squeeze()
+                    
+                    indices = np.argwhere(obj_mask)  # Find indices of True pixels
 
-                    mask_size = np.sum(obj_mask)
-                    mask_ratio = mask_size / total_pixels
+                    # Calculate bbox area
+                    if indices.size > 0:
+                        # Get the bounding box coordinates
+                        y_min, x_min = indices.min(axis=0)
+                        y_max, x_max = indices.max(axis=0)
+
+                        # Calculate the width and height of the bounding box
+                        width = x_max - x_min + 1
+                        height = y_max - y_min + 1
+
+                        # Calculate the area of the bounding box
+                        bbox_area = width * height
+
+                    else:
+                        # If the mask is empty, set the area to 0
+                        bbox_area = 0
+
+                    # Calculate the projected mask bbox area
+                    local_aabb, global_transform = get_bb_for_object_id(self.sim, obj_id)
+                    
+                    # Grab the agent's camera intrinsics
+                    sensor_uuid = f"{curr_agent}_{camera_source}_rgb"
+
+                    intrinsics_array = camera_spec_to_intrinsics(
+                        self.sim.agents[0]._sensors[sensor_uuid].specification()
+                    )
+                    # Grab the agent's camera pose
+                    extrinsics = self.sim.agents[0]._sensors[f"{curr_agent}_{camera_source}_rgb"].render_camera.camera_matrix
+                    # Compute the 2D bounding box area
+                    bbox = compute_2d_bbox_from_aabb(local_aabb, np.array(global_transform), np.array(intrinsics_array), np.array(extrinsics))
+                    projected_bbox_area = bbox["area"]
+                    assert projected_bbox_area > 0
+                    bbox_ratio = bbox_area / projected_bbox_area
 
                     # Calculate mean depth for the object's masked region
-                    if mask_size > 0:
+                    if bbox_area > 0:
                         mean_depth = np.mean(depth_map_resized[obj_mask])
                     else:
                         mean_depth = float("inf")
+                    
                     # Apply filters
-                    if (mask_ratio >= mask_ratio_thresh and mean_depth <= depth_thresh) or (mean_depth <= depth_close_thresh):
-                        obj = get_obj_from_id(self.sim, obj_id)
+                    if mean_depth <= depth_thresh and bbox_ratio >= bbox_ratio_thresh:
                         if obj is not None:
                             valid_handles.add(obj.handle)
-                    # import ipdb; ipdb.set_trace()
 
                 handles[uid] = valid_handles
             else:
