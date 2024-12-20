@@ -21,6 +21,10 @@ from habitat_baselines.common.obs_transformers import (
     apply_obs_transforms_obs_space,
     get_active_obs_transforms,
 )
+from habitat.sims.habitat_simulator.sim_utilities import (
+    get_all_object_ids,
+    get_bb_for_object_id,
+)
 
 # HABITAT
 from habitat_baselines.utils.common import batch_obs, get_num_actions
@@ -522,6 +526,24 @@ class EnvironmentInterface:
                             self.trajectory_save_paths[curr_agent], "intrinsics.npy"
                         ),
                         intrinsics_array,
+                    )
+                    
+                    # save the simulator object
+                    object_id_to_handle = get_all_object_ids(self.sim)
+                    np.save(
+                        os.path.join(
+                            self.trajectory_save_paths[curr_agent], "object_id_to_handle.npy"
+                        ),
+                        object_id_to_handle,
+                    )
+                    
+                    # save all bounding boxes
+                    all_bb = {obj_id: get_bb_for_object_id(self.sim, obj_id) for obj_id in object_id_to_handle}
+                    np.save(
+                        os.path.join(
+                            self.trajectory_save_paths[curr_agent], "all_bb.npy"
+                        ),
+                        all_bb,
                     )
 
                     # # create other sub-directories
