@@ -35,8 +35,8 @@ os.chdir(ROOT_DIR)
 
 # Constants
 ANGLE_THRESHOLD = {"on the left": pi / 4, "on the right": pi / 4, "on the back of self": pi / 4, "on the back of ref": pi / 4}
-AGENT_ENTITY_DISTANCE_THRESHOLD = 4.0
-NEAR_DISTANCE_THRESHOLD = 3.0
+AGENT_ENTITY_DISTANCE_THRESHOLD = 6.0
+NEAR_DISTANCE_THRESHOLD = 5.0
 
 def calculate_angle(v1, v2):
     """Calculate the angle between two vectors."""
@@ -87,7 +87,7 @@ def parse_world_description(file_path):
             objects[obj.strip()] = loc.strip()
     return furniture, objects
 
-def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_entity, room_path, ctxt_upper_thred=0.1, trgt_lower_thred=0.8):
+def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_entity, room_path, ctxt_upper_thred=0.001, trgt_lower_thred=0.8):
     """
     Construct segment data for 'ctxt' and 'trgt' frames based on parsed world description and proximity check.
     """
@@ -114,7 +114,7 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         unique_obj_ids = [
             idx - 100 for idx in unique_obj_ids if idx != UNKNOWN_SEMANTIC_ID
         ]
-        print(unique_obj_ids)
+        # print(unique_obj_ids)
         obj_ids = [one_obj_id for one_obj_id in unique_obj_ids if object_id_to_handle[one_obj_id] == target_entity.sim_handle]
         if len(obj_ids)!=0:
             obj_id = obj_ids[0]

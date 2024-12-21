@@ -20,6 +20,7 @@ oracle_explore:
     enable_backing_up          : False
     # Disable exploration
     enable_exploration         : False
+    shuffle_furnitures         : True
 
     nav_skill_config:
       name                       : 'Navigate'

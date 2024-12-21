@@ -704,7 +704,7 @@ class PerceptionSim(Perception):
         obs,
         agent_uids,
         save_object_masks: bool = False,
-        bbox_ratio_thresh: float = 0.5,
+        bbox_ratio_thresh: float = 0.2,
         depth_thresh: float = 8.0,
     ):
         """

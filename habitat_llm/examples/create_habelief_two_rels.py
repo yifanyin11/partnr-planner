@@ -14,8 +14,8 @@ os.chdir(ROOT_DIR)
 # Constants
 ANGLE_THRESHOLD = {"on the left": pi / 4, "on the right": pi / 4, "on the back of self": pi / 4, "on the back of ref": pi / 4}
 # ANGLE_THRESHOLD = {"on the left": pi / 6, "on the right": pi / 6, "on the back of self": pi / 3, "on the back of ref": pi / 3}
-AGENT_ENTITY_DISTANCE_THRESHOLD = 4.0
-NEAR_DISTANCE_THRESHOLD = 3.0
+AGENT_ENTITY_DISTANCE_THRESHOLD = 6.0
+NEAR_DISTANCE_THRESHOLD = 5.0
 
 def calculate_angle(v1, v2):
     """Calculate the angle between two vectors."""

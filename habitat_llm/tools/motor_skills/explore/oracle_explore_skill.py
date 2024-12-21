@@ -9,6 +9,7 @@ from typing import List
 
 import numpy as np
 import torch
+import random
 
 from habitat_llm.tools.motor_skills.nav.oracle_nav_skill import OracleNavSkill
 from habitat_llm.tools.motor_skills.skill import SkillPolicy
@@ -73,6 +74,7 @@ class OracleExploreSkill(SkillPolicy):
         self.target_room_name: str = None
         self.fur_queue = []
         self.target_fur_name = None
+        self.shuffle_furnitures = config.shuffle_furnitures
 
     def set_target(self, target_room_name, env):
         """
@@ -92,6 +94,9 @@ class OracleExploreSkill(SkillPolicy):
             self.fur_queue = self.env.world_graph[self.agent_uid].get_furniture_in_room(
                 target_room_name
             )
+        
+        if self.shuffle_furnitures:
+            random.shuffle(self.fur_queue)
 
         # Set flag to true
         self.target_is_set = True

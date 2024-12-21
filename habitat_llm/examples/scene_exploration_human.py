@@ -13,6 +13,7 @@ This trajectory is then used to create a map of the scenes through Concept-Graph
 
 import sys
 import os
+import random
 import pathlib
 
 ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
@@ -38,6 +39,7 @@ from habitat_llm.world_model import Room
 from habitat_llm.utils.core import get_config
 from habitat_llm.agent.env.dataset import CollaborationDatasetV0
 
+MAX_MAPPING_PER_SCENE = 10
 
 # Method to load agent planner from the config
 def run_planner():
@@ -63,6 +65,7 @@ def run_planner():
         "evaluation.output_dir=./outputs",
         "trajectory.save=True",
         "trajectory.agent_names=[agent_1]",
+        "trajectory.save_path=data/trajectories/unit/",
     ]
 
     EPISODE_OVERRIDES = [
@@ -93,11 +96,11 @@ def run_planner():
 
     # Initialize the environment interface for the agent
     dataset = CollaborationDatasetV0(config.habitat.dataset)
-    if config.get("episode_indices", None) is not None:
-        episode_subset = [dataset.episodes[x] for x in config.episode_indices]
-        dataset = CollaborationDatasetV0(
-            config=config.habitat.dataset, episodes=episode_subset
-        )
+    # if config.get("episode_indices", None) is not None:
+    #     episode_subset = [dataset.episodes[x] for x in config.episode_indices]
+    #     dataset = CollaborationDatasetV0(
+    #         config=config.habitat.dataset, episodes=episode_subset
+    #     )
     env_interface = EnvironmentInterface(config, dataset=dataset)
 
     # Instantiate the agent planner
@@ -117,7 +120,7 @@ def run_planner():
         cprint("Single agent mode", "green")
     cprint("---------------------------------------\n", "blue")
     num_episodes = len(env_interface.env.episodes)
-    processed_scenes = set()
+    processed_scenes = {}
     robot_agent_uid = config.robot_agent_uid
 
     # initial reset to load first episode
@@ -127,8 +130,14 @@ def run_planner():
         cur_episode = env_interface.env.env.env._env.current_episode
         cur_episode.episode_id = idx
         scene_id = cur_episode.scene_id
-        if str(scene_id) in processed_scenes:
-            print(f"Skipping scene {scene_id}. Already mapped.")
+
+        if str(scene_id) not in processed_scenes:
+            processed_scenes[str(scene_id)] = 1
+        else:
+            processed_scenes[str(scene_id)] += 1
+
+        if processed_scenes[str(scene_id)] > MAX_MAPPING_PER_SCENE:
+            print(f"Skipping scene {scene_id}. Already mapped {MAX_MAPPING_PER_SCENE} times.")
             continue
         print(
             f"Processing scene: {scene_id}, episode: {idx+1}/{num_episodes}, processed scenes: {len(processed_scenes)}"
@@ -137,6 +146,7 @@ def run_planner():
 
         # get the list of all rooms in this house
         rooms = env_interface.world_graph[robot_agent_uid].get_all_nodes_of_type(Room)
+        random.shuffle(rooms)
         # pairs = env_interface.world_graph[robot_agent_uid].find_object_furniture_name_pairs("/media/yyin34/ExtremePro/projects/home_robot/pairs.json")
         # desc = env_interface.world_graph[robot_agent_uid].get_world_descr()
         # with open("/media/yyin34/ExtremePro/projects/home_robot/world_descr.txt", "w") as file:
@@ -161,15 +171,15 @@ def run_planner():
                 )
                 # import ipdb; ipdb.set_trace()
                 low_level_action = {1: low_level_action}
-                # try:
-                #     obs, reward, done, info = env_interface.step(
-                #         low_level_action, room_name=current_room.name
-                #     )
-                # except:
-                #     break
-                obs, reward, done, info = env_interface.step(
-                    low_level_action, room_name=current_room.name
-                )
+                try:
+                    obs, reward, done, info = env_interface.step(
+                        low_level_action, room_name=current_room.name
+                    )
+                except:
+                    break
+                # obs, reward, done, info = env_interface.step(
+                #     low_level_action, room_name=current_room.name
+                # )
                 # Refresh observations
                 observations = env_interface.parse_observations(obs)
                 # Store third person frames for generating video
@@ -188,7 +198,7 @@ def run_planner():
 
         # if eval_runner.dvu.frames:
         #     eval_runner.dvu._make_video(play=False, postfix=scene_id)
-        processed_scenes.add(str(scene_id))
+        # processed_scenes.add(str(scene_id))
     env_interface.sim.close()
 
 
