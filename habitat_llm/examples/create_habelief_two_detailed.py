@@ -7,6 +7,7 @@ import imageio
 from math import pi, acos
 from numpy.linalg import norm
 import sys
+import re
 import pathlib
 from habitat.sims.habitat_simulator.sim_utilities import (
     get_obj_from_handle,
@@ -35,8 +36,11 @@ os.chdir(ROOT_DIR)
 
 # Constants
 ANGLE_THRESHOLD = {"on the left": pi / 4, "on the right": pi / 4, "on the back of self": pi / 4, "on the back of ref": pi / 4}
-AGENT_ENTITY_DISTANCE_THRESHOLD = 6.0
-NEAR_DISTANCE_THRESHOLD = 5.0
+AGENT_ENTITY_DISTANCE_THRESHOLD = 3.0
+NEAR_DISTANCE_THRESHOLD = 3.0
+MAX_CLIPS_PER_COMBINATION = 1
+AGENT_NAME = "agent_1"
+combination_control = {}
 
 def calculate_angle(v1, v2):
     """Calculate the angle between two vectors."""
@@ -64,6 +68,32 @@ def get_instrinsic_matrix(intrinsics):
     ])
     return intrinsics_matrix
 
+def recover_scene_id_and_room_name(room_path):
+    # Extract the last two components from the path
+    data_root, episode_id, agent, room_name = room_path.rsplit(os.sep, 3)
+    
+    # Extract scene_id from episode_id
+    match = re.search(r'epidx_\d+_scene_(.+)', episode_id)
+    if match:
+        scene_id = match.group(1)
+    else:
+        raise ValueError("Invalid episode_id format in the path.")
+    
+    return scene_id, room_name
+
+def pass_combination_control(room_path, relation, obj1, obj2):
+    """Check if the combination is allowed to be processed."""
+    obj_name1 = obj1.name
+    obj_name2 = obj2.name
+    scene_id, room_name = recover_scene_id_and_room_name(room_path)
+    key = f"{scene_id}_{room_name}_{obj_name1}_{obj_name2}_{relation}"
+    if key not in combination_control:
+        combination_control[key] = 0
+    if combination_control[key] > MAX_CLIPS_PER_COMBINATION:
+        return False
+    combination_control[key] += 1
+    return True
+
 def parse_world_description(file_path):
     """Parses a world description file."""
     with open(file_path, 'r') as file:
@@ -87,7 +117,7 @@ def parse_world_description(file_path):
             objects[obj.strip()] = loc.strip()
     return furniture, objects
 
-def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_entity, room_path, ctxt_upper_thred=0.001, trgt_lower_thred=0.8):
+def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_entity, room_path, ctxt_ref_upper_thred=0.8, ctxt_trgt_upper_thred=0.001, trgt_trgt_lower_thred=0.8):
     """
     Construct segment data for 'ctxt' and 'trgt' frames based on parsed world description and proximity check.
     """
@@ -98,11 +128,27 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
     # Read intrinsics
     intrinsics = np.load(os.path.join(room_path, "..", "intrinsics.npy"), allow_pickle=True)[0]
     intrinsics_array = get_instrinsic_matrix(intrinsics)
-
+    # Load all furniture and object lists
+    all_objects_files = sorted(os.listdir(os.path.join(room_path, "all_objects")))
+    all_furnitures_files = sorted(os.listdir(os.path.join(room_path, "all_furnitures")))
+    all_objects_path = os.path.join(room_path, "all_objects", all_objects_files[0])
+    all_furnitures_path = os.path.join(room_path, "all_furnitures", all_furnitures_files[0])
+    all_objects = np.load(all_objects_path, allow_pickle=True)
+    all_furnitures = np.load(all_furnitures_path, allow_pickle=True)
+    all_entities = list(all_objects) + list(all_furnitures)
     # Load object_id_to_handle
     object_id_to_handle = np.load(os.path.join(room_path, "..", "object_id_to_handle.npy"), allow_pickle=True).item()
+    # Obtain object_id to name mapping
+    object_id_to_name = {
+        obj_id: next((obj.name for obj in all_entities if obj.sim_handle == handle), None)
+        for obj_id, handle in object_id_to_handle.items()
+    }
+    object_id_to_name = {k: v for k, v in object_id_to_name.items() if v is not None}
     # Load all bounding boxes
     all_bboxes = np.load(os.path.join(room_path, "..", "all_bb.npy"), allow_pickle=True).item()
+    # Extract ref and trgt entity names
+    ref_name = ref_entity.name
+    target_name = target_entity.name
     # Filter out all ctxt images in which the target entity is present
     for i in range(len(raw_ctxt_frames)):
         # Read all images using imageio
@@ -114,7 +160,30 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         unique_obj_ids = [
             idx - 100 for idx in unique_obj_ids if idx != UNKNOWN_SEMANTIC_ID
         ]
-        # print(unique_obj_ids)
+        # Check if other entities with the same types as the ref and trgt are in the image
+        obj_names = [object_id_to_name[one_obj_id] for one_obj_id in unique_obj_ids if one_obj_id in object_id_to_name]
+        obj_clean_names = [clean_text(obj_name) for obj_name in obj_names]
+        if ref_name not in obj_names:
+            continue
+        if obj_clean_names.count(clean_text(ref_name)) > 1:
+            continue
+        else:
+            if target_name in obj_names and obj_clean_names.count(clean_text(target_name)) > 1:
+                continue
+            elif target_name not in obj_names and obj_clean_names.count(clean_text(target_name)) > 0:
+                continue
+        # make sure the ref entity is in the image
+        obj_ids = [one_obj_id for one_obj_id in unique_obj_ids if object_id_to_handle[one_obj_id] == ref_entity.sim_handle]
+        if len(obj_ids)!=0:
+            obj_id = obj_ids[0]
+        else:
+            continue
+        # import ipdb; ipdb.set_trace()
+        bbox_ratio = get_bbox_ratio(ctxt_panoptic, obj_id, intrinsics_array, extrinsics, all_bboxes)
+        # import ipdb; ipdb.set_trace()
+        if bbox_ratio < ctxt_ref_upper_thred:
+            continue
+        # make sure the target entity is not in the image
         obj_ids = [one_obj_id for one_obj_id in unique_obj_ids if object_id_to_handle[one_obj_id] == target_entity.sim_handle]
         if len(obj_ids)!=0:
             obj_id = obj_ids[0]
@@ -124,7 +193,7 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         # import ipdb; ipdb.set_trace()
         bbox_ratio = get_bbox_ratio(ctxt_panoptic, obj_id, intrinsics_array, extrinsics, all_bboxes)
         # import ipdb; ipdb.set_trace()
-        if bbox_ratio < ctxt_upper_thred:
+        if bbox_ratio < ctxt_trgt_upper_thred:
             ctxt_frames.append(raw_ctxt_frames[i])
     
     # Filter out all trgt images in which the target entity is not present
@@ -138,12 +207,31 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         unique_obj_ids = [
             idx - 100 for idx in unique_obj_ids if idx != UNKNOWN_SEMANTIC_ID
         ]
+        # Check if other entities with the same types as the ref and trgt are in the image
+        obj_names = [object_id_to_name[one_obj_id] for one_obj_id in unique_obj_ids if one_obj_id in object_id_to_name]
+        obj_clean_names = [clean_text(obj_name) for obj_name in obj_names]
+
+        if target_name not in obj_names:
+            continue
+        if obj_clean_names.count(clean_text(target_name)) > 1:
+            continue
+        else:
+            if ref_name in obj_names and obj_clean_names.count(clean_text(ref_name)) > 1:
+                continue
+            elif ref_name not in obj_names and obj_clean_names.count(clean_text(ref_name)) > 0:
+                continue
+
+        # make sure the trgt entity is in the image
         obj_ids = [one_obj_id for one_obj_id in unique_obj_ids if object_id_to_handle[one_obj_id] == target_entity.sim_handle]
         if len(obj_ids)==0:
             continue
         obj_id = obj_ids[0]
         bbox_ratio = get_bbox_ratio(trgt_panoptic, obj_id, intrinsics_array, extrinsics, all_bboxes)
-        if bbox_ratio > trgt_lower_thred:
+        
+        if ref_name in obj_names and len(obj_names)==2 and bbox_ratio > 1/2:    
+            trgt_frames.append(raw_trgt_frames[i])
+            continue
+        if bbox_ratio > trgt_trgt_lower_thred:
             trgt_frames.append(raw_trgt_frames[i])
     
     # Collect file paths for each modality
@@ -175,7 +263,7 @@ def save_segment(segment_dir, segment_data, ref_name, target_name, relationship)
     # Ensure both ctxt and trgt have at least one frame
     if not segment_data["ctxt"]["frames"] or not segment_data["trgt"]["frames"]:
         print(f"Skipping segment {segment_dir}: Missing frames in ctxt or trgt.")
-        return  # Skip saving if any list is empty
+        return False # Skip saving if any list is empty
 
     os.makedirs(segment_dir, exist_ok=True)
     
@@ -211,6 +299,7 @@ def save_segment(segment_dir, segment_data, ref_name, target_name, relationship)
         description = f"A {target_name} is {relationship} the {ref_name}."
     with open(desc_file, "w") as f:
         f.write(description)
+    return True
 
 def get_bbox_ratio(
     ctxt_panoptic,
@@ -353,7 +442,7 @@ def generate_segments(data_root, new_root):
     }
     for episode_id in os.listdir(data_root):
         print(f"Processing episode {episode_id}...")
-        episode_path = os.path.join(data_root, episode_id, "agent_1")
+        episode_path = os.path.join(data_root, episode_id, AGENT_NAME)
 
         if not os.path.isdir(episode_path):
             continue
@@ -406,7 +495,9 @@ def generate_segments(data_root, new_root):
                 ##############
                 one_world_graph_path = os.path.join(room_path, "world_graph", f"{frame_idx}.npy")
                 one_world_graph = np.load(one_world_graph_path, allow_pickle=True).item()
-                if one_world_graph.get_room_for_entity(one_world_graph.get_spot_robot()).name != room_name:
+                if (AGENT_NAME=='main_agent' or AGENT_NAME=='agent_0') and one_world_graph.get_room_for_entity(one_world_graph.get_spot_robot()).name != room_name:
+                    continue
+                if (AGENT_NAME=='agent_1') and one_world_graph.get_room_for_entity(one_world_graph.get_human()).name != room_name:
                     continue
                 ##############
                 ##  Filter  ##
@@ -474,17 +565,18 @@ def generate_segments(data_root, new_root):
             #             continue
                     
             #         for relationship, func in relationships[:3]:  # on, in, inside
-            #             if func(None, obj_entity, furn_entity):
-            #                 stats[relationship] += 1
+            #             if func(None, obj_entity, furn_entity) and pass_combination_control(room_path, relationship, obj_entity, furn_entity):
             #                 # Save the segment and description
             #                 segment_dir = os.path.join(new_root, episode_id+f"_{room_name}_{furn_name}_{obj_name}_{relationship.replace(' ', '_')}")
             #                 ctxt_relative_indices = np.where((furn_discovery_steps == 1) & (obj_discovery_steps == 0))[0]
-            #                 trgt_relative_indices = np.where((furn_discovery_steps == 1) & (obj_discovery_steps == 1))[0]
+            #                 # trgt_relative_indices = np.where((furn_discovery_steps == 1) & (obj_discovery_steps == 1))[0]
+            #                 trgt_relative_indices = np.where(obj_discovery_steps == 1)[0]
             #                 ctxt_frames = [sorted_frame_indices[i] for i in ctxt_relative_indices]
             #                 trgt_frames = [sorted_frame_indices[i] for i in trgt_relative_indices]
 
             #                 segment_data = construct_segment_data(ctxt_frames, trgt_frames, obj_entity, furn_entity, room_path)
-            #                 save_segment(segment_dir, segment_data, furn_name, obj_name, relationship)
+            #                 if save_segment(segment_dir, segment_data, furn_name, obj_name, relationship):
+            #                     stats[relationship] += 1
             ############
             ##  TEMP  ##
             ############
@@ -523,16 +615,17 @@ def generate_segments(data_root, new_root):
             #             print(f"Object {obj_name2} not found in room {room_name}.")
             #             continue
                         
-            #         if near(world_graph, obj_entity1, obj_entity2):
-            #             stats["near"] += 1
+            #         if near(world_graph, obj_entity1, obj_entity2) and pass_combination_control(room_path, "near", obj_entity1, obj_entity2):
             #             # Save segment
             #             segment_dir = os.path.join(new_root, episode_id+f"_{room_name}_{obj_name1}_{obj_name2}_near")
             #             ctxt_relative_indices = np.where((discovery_steps1 == 1) & (discovery_steps2 == 0))[0]
-            #             trgt_relative_indices = np.where((discovery_steps1 == 1) & (discovery_steps2 == 1))[0]
+            #             # trgt_relative_indices = np.where((discovery_steps1 == 1) & (discovery_steps2 == 1))[0]
+            #             trgt_relative_indices = np.where(discovery_steps2 == 1)[0]
             #             ctxt_frames = [sorted_frame_indices[i] for i in ctxt_relative_indices]
             #             trgt_frames = [sorted_frame_indices[i] for i in trgt_relative_indices]
             #             segment_data = construct_segment_data(ctxt_frames, trgt_frames, obj_entity1, obj_entity2, room_path)
-            #             save_segment(segment_dir, segment_data, obj_name1, obj_name2, "near")
+            #             if save_segment(segment_dir, segment_data, obj_name1, obj_name2, "near"):
+            #                 stats["near"] += 1
             ############
             ##  TEMP  ##
             ############
@@ -571,7 +664,7 @@ def generate_segments(data_root, new_root):
                     ##############
                     ref_camera_pose = np.load(os.path.join(pose_path, f"{sorted_frame_indices[0]}.npy"))  # Load camera pose
                     for relationship, func in relationships[3:]:
-                        if func(ref_camera_pose, furn_entity1, furn_entity2):
+                        if func(ref_camera_pose, furn_entity1, furn_entity2) and pass_combination_control(room_path, relationship, furn_entity1, furn_entity2):
                             if relationship != "near":
                                 # print(f"Found relationship: {relationship}")
                                 ############
@@ -581,15 +674,16 @@ def generate_segments(data_root, new_root):
                                 ############
                                 ##  TEMP  ##
                                 ############
-                            stats[relationship] += 1
                             # Save segment
                             segment_dir = os.path.join(new_root, episode_id+f"_{room_name}_{furn_name1}_{furn_name2}_{relationship.replace(' ', '_')}")
                             ctxt_relative_indices = np.where((discovery_steps1 == 1) & (discovery_steps2 == 0))[0]
-                            trgt_relative_indices = np.where((discovery_steps1 == 1) & (discovery_steps2 == 1))[0]
+                            # trgt_relative_indices = np.where((discovery_steps1 == 1) & (discovery_steps2 == 1))[0]
+                            trgt_relative_indices = np.where(discovery_steps2 == 1)[0]
                             ctxt_frames = [sorted_frame_indices[i] for i in ctxt_relative_indices]
                             trgt_frames = [sorted_frame_indices[i] for i in trgt_relative_indices]
                             segment_data = construct_segment_data(ctxt_frames, trgt_frames, furn_entity1, furn_entity2, room_path)
-                            save_segment(segment_dir, segment_data, furn_name1, furn_name2, relationship)
+                            if save_segment(segment_dir, segment_data, furn_name1, furn_name2, relationship):
+                                stats[relationship] += 1
 
     # Print statistics
     print(stats)

@@ -48,10 +48,8 @@ def run_planner():
 
     # setup required overrides
     DATASET_OVERRIDES = [
-        # "habitat.dataset.data_path=data/datasets/partnr_episodes/v0_0/val_mini.json.gz",
         "habitat.dataset.data_path=data/datasets/partnr_episodes/v0_0/val.json.gz",
         "habitat.dataset.scenes_dir=data/hssd-hab/",
-        # "habitat.dataset.scenes_dir=data/replica_cad/",
     ]
     SENSOR_OVERRIDES = [
         "habitat.simulator.agents.agent_0.sim_sensors.jaw_depth_sensor.normalize_depth=False",
@@ -195,7 +193,8 @@ def run_planner():
             print(
                 f"\tCompleted high-level action: {hl_action_name} on {hl_action_input}"
             )
-
+        num_saved_trajectories = sum(processed_scenes.values())
+        print(f"Saved {num_saved_trajectories} trajectories.")
         # if eval_runner.dvu.frames:
         #     eval_runner.dvu._make_video(play=False, postfix=scene_id)
         # processed_scenes.add(str(scene_id))
