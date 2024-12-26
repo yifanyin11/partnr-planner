@@ -18,6 +18,7 @@ from habitat.sims.habitat_simulator.sim_utilities import (
     get_obj_from_id,
     get_bb_for_object_id,
     on_floor,
+    get_all_articulated_object_ids,
 )
 from magnum import Vector3
 
@@ -74,14 +75,30 @@ def compute_2d_bbox_from_aabb(local_aabb, global_transform, intrinsics, extrinsi
         dict: Contains the bounding box coordinates (x_min, y_min, x_max, y_max) and area.
     """
     def project_3d_to_2d(points_3d, intrinsics, extrinsics):
-        """Projects 3D points to 2D image plane."""
+        """Projects 3D points to the 2D image plane, conditionally flipping Z values."""
         # Transform points from world to camera coordinates
         points_camera = (extrinsics @ (np.hstack((points_3d, np.ones((points_3d.shape[0], 1))))).T).T
-        points_camera = points_camera[:, :3]  # Discard homogeneous coordinate
+        # Make a copy of the points_camera array
+        points_camera_large = points_camera.copy()
+        # Filter out points behind the camera
+        points_camera = points_camera[points_camera[:, 2] < 0]
+        # Check if there are no valid points
+        if points_camera.shape[0] == 0:
+            return np.array([]), np.array([])
+        # Check if there are valid points in the view
+        if np.any(points_camera_large[:, 2] < 0):
+            # If there are, flip the Z values of the points behind the camera
+            points_camera_large[:, 2] = - np.abs(points_camera_large[:, 2])
         # Project points from camera to image plane
-        points_image = (intrinsics @ points_camera.T).T
-        points_image = points_image[:, :2] / points_image[:, 2:]  # Normalize by depth
-        return points_image
+        points_image = (intrinsics @ points_camera[:, :3].T).T  # Apply intrinsics
+        points_image = points_image[:, :2] / points_camera[:, 2:3]  # Normalize by depth (Z)
+        # x=width-x
+        points_image[:, 0] = intrinsics[0, 2] * 2 - points_image[:, 0]
+        points_image_large = (intrinsics @ points_camera_large[:, :3].T).T  # Apply intrinsics
+        points_image_large = points_image_large[:, :2] / points_camera_large[:, 2:3]
+        # x=width-x
+        points_image_large[:, 0] = intrinsics[0, 2] * 2 - points_image_large[:, 0]
+        return points_image, points_image_large
 
     # Get corners of the local AABB
     corners_local = np.array([
@@ -97,23 +114,54 @@ def compute_2d_bbox_from_aabb(local_aabb, global_transform, intrinsics, extrinsi
     # Transform corners to global coordinates
     corners_global = (global_transform @ (np.hstack((corners_local, np.ones((corners_local.shape[0], 1))))).T).T[:, :3]
     # Project to 2D
-    projected_2d_points = project_3d_to_2d(corners_global, intrinsics, extrinsics)
+    projected_2d_points, projected_2d_points_large = project_3d_to_2d(corners_global, intrinsics, extrinsics)
+
+    if len(projected_2d_points) == 0:
+        return {
+            "x_min": 0,
+            "y_min": 0,
+            "x_max": 0,
+            "y_max": 0,
+            "area": np.inf,
+            "large_area": np.inf,
+        }
 
     # Compute the bounding box
     x_min, y_min = projected_2d_points.min(axis=0)
     x_max, y_max = projected_2d_points.max(axis=0)
+    
+    # Make sure the bounding box is within the image
+    x_min = max(0, x_min)
+    y_min = max(0, y_min)
+    x_max = max(min(intrinsics[0, 2] * 2, x_max), 0)
+    y_max = max(min(intrinsics[1, 2] * 2, y_max), 0)
 
     bbox_width = x_max - x_min
     bbox_height = y_max - y_min
 
     bbox_area = bbox_width * bbox_height
 
+    if bbox_area == 0:
+        bbox_area = np.inf
+    
+    x_min_large, y_min_large = projected_2d_points_large.min(axis=0)
+    x_max_large, y_max_large = projected_2d_points_large.max(axis=0)
+
+    bbox_width_large = x_max_large - x_min_large
+    bbox_height_large = y_max_large - y_min_large
+
+    bbox_area_large = bbox_width_large * bbox_height_large
+
+    if bbox_area_large == 0:
+        bbox_area_large = np.inf
+    
     return {
         "x_min": x_min,
         "y_min": y_min,
         "x_max": x_max,
         "y_max": y_max,
-        "area": bbox_area
+        "area": bbox_area,
+        "large_area": bbox_area_large,
     }
 
 class PerceptionSim(Perception):
@@ -178,6 +226,8 @@ class PerceptionSim(Perception):
 
         # Cache of object positions.
         self._obj_position_cache: Dict[str, Vector3] = {}
+
+        self.ao_id_to_handle = get_all_articulated_object_ids(self.sim)
 
         return
 
@@ -829,7 +879,7 @@ class PerceptionSim(Perception):
 
         return handles
 
-    def get_recent_subgraph(self, sim, agent_uids, obs):
+    def get_recent_subgraph(self, sim, agent_uids, obs, bbox_ratio_thred=0.2):
         """
         Method to return receptacle/agent-object associated detections from the sim
         This returns objects in view including objects held by the agent.
@@ -861,27 +911,41 @@ class PerceptionSim(Perception):
 
         # Convert handles to names
         names = []
-        names_save = []
         for handle in handles:
             if handle in self.sim_handle_to_name:
-                names_save.append(self.sim_handle_to_name[handle])
-        all_furnitures = self.gt_graph.get_all_furnitures()
-        furn_handles = [furniture.sim_handle for furniture in all_furnitures]
-        furn_names = [furniture.name for furniture in all_furnitures]
-        for handle in handles:
-            if handle in furn_handles:
-                idx = furn_handles.index(handle)
-                names_save.append(furn_names[idx])
-        # for handle in furn_handles:
-        #     if handle in furn_handles:
-        #         idx = furn_handles.index(handle)
-        #         names_save.append(furn_names[idx])
-        names = list(set(names_save))
-        # import ipdb; ipdb.set_trace()
+                names.append(self.sim_handle_to_name[handle])
 
         # Forcefully add robot and human node names
         agent_names = [f"agent_{uid}" for uid in agent_uids]
         names.extend(agent_names)
+
+        # Check visibility of all furniture in the current room
+        if 'agent_1' in agent_names:
+            furns_in_room = self.gt_graph.get_furniture_in_room(self.gt_graph.get_room_for_entity(self.gt_graph.get_human()))
+            furns_in_room = [furn for furn in furns_in_room if furn.name not in names]
+            # Grab the agent's camera intrinsics
+            sensor_uuid = f"agent_1_head_rgb"
+            camera_spec = self.sim.agents[0]._sensors[sensor_uuid].specification()
+            intrinsics_array = camera_spec_to_intrinsics(camera_spec)
+            image_height, image_width = np.array(camera_spec.resolution).tolist()
+            # check visibility for each furniture
+            for furn in furns_in_room:
+                # find the object id for the furniture
+                obj_ids = [one_obj_id for one_obj_id in self.ao_id_to_handle if self.ao_id_to_handle[one_obj_id] == furn.sim_handle]
+                if len(obj_ids) == 0:
+                    continue
+                obj_id = obj_ids[0]
+                local_aabb, global_transform = get_bb_for_object_id(self.sim, obj_id)
+                # Grab the agent's camera pose
+                extrinsics = self.sim.agents[0]._sensors[f"agent_1_head_rgb"].render_camera.camera_matrix
+                # Compute the 2D bounding box area
+                bbox = compute_2d_bbox_from_aabb(local_aabb, np.array(global_transform), np.array(intrinsics_array), np.array(extrinsics))
+                # get the area of the bbox that within the image range
+                if bbox["area"] == np.inf:
+                    bbox["area"] = 0
+                if bbox["area"]/bbox["large_area"] > bbox_ratio_thred:
+                    names.append(furn.name)
+        names = list(set(names))
 
         # add held objects to the subgraph because they may not be seen
         # by the observations

@@ -117,7 +117,7 @@ def parse_world_description(file_path):
             objects[obj.strip()] = loc.strip()
     return furniture, objects
 
-def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_entity, room_path, ctxt_ref_upper_thred=0.8, ctxt_trgt_upper_thred=0.001, trgt_trgt_lower_thred=0.8):
+def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_entity, room_path, ctxt_ref_upper_thred=0.3, ctxt_trgt_upper_thred=0.001, trgt_trgt_lower_thred=0.3):
     """
     Construct segment data for 'ctxt' and 'trgt' frames based on parsed world description and proximity check.
     """
@@ -138,6 +138,10 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
     all_entities = list(all_objects) + list(all_furnitures)
     # Load object_id_to_handle
     object_id_to_handle = np.load(os.path.join(room_path, "..", "object_id_to_handle.npy"), allow_pickle=True).item()
+    object_handle_to_id = {v: k for k, v in object_id_to_handle.items()}
+    # Load ao_id_to_handle
+    ao_id_to_handle = np.load(os.path.join(room_path, "..", "ao_id_to_handle.npy"), allow_pickle=True).item()
+    ao_handle_to_id = {v: k for k, v in ao_id_to_handle.items()}
     # Obtain object_id to name mapping
     object_id_to_name = {
         obj_id: next((obj.name for obj in all_entities if obj.sim_handle == handle), None)
@@ -151,6 +155,8 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
     target_name = target_entity.name
     # Filter out all ctxt images in which the target entity is present
     for i in range(len(raw_ctxt_frames)):
+        world_graph_path = os.path.join(room_path, "world_graph", f"{raw_ctxt_frames[i]}.npy")
+        world_graph = np.load(world_graph_path, allow_pickle=True).item()
         # Read all images using imageio
         ctxt_panoptic = imageio.v2.imread(os.path.join(panoptic_path, f"{raw_ctxt_frames[i]}.png"))
         # Grab the agent's camera pose
@@ -160,6 +166,11 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         unique_obj_ids = [
             idx - 100 for idx in unique_obj_ids if idx != UNKNOWN_SEMANTIC_ID
         ]
+        # Get articulated furniture in the room
+        furns_in_room = world_graph.get_furniture_in_room(world_graph.get_room_for_entity(world_graph.get_human()))
+        furns_in_room = [furn for furn in furns_in_room if furn.sim_handle in ao_handle_to_id]
+        extra_furn_ids = [ao_handle_to_id[furn.sim_handle] for furn in furns_in_room]
+        unique_obj_ids += extra_furn_ids
         # Check if other entities with the same types as the ref and trgt are in the image
         obj_names = [object_id_to_name[one_obj_id] for one_obj_id in unique_obj_ids if one_obj_id in object_id_to_name]
         obj_clean_names = [clean_text(obj_name) for obj_name in obj_names]
@@ -178,8 +189,7 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
             obj_id = obj_ids[0]
         else:
             continue
-        # import ipdb; ipdb.set_trace()
-        bbox_ratio = get_bbox_ratio(ctxt_panoptic, obj_id, intrinsics_array, extrinsics, all_bboxes)
+        bbox_ratio = get_bbox_ratio(obj_id, intrinsics_array, extrinsics, all_bboxes)
         # import ipdb; ipdb.set_trace()
         if bbox_ratio < ctxt_ref_upper_thred:
             continue
@@ -191,13 +201,15 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
             ctxt_frames.append(raw_ctxt_frames[i])
             continue
         # import ipdb; ipdb.set_trace()
-        bbox_ratio = get_bbox_ratio(ctxt_panoptic, obj_id, intrinsics_array, extrinsics, all_bboxes)
+        bbox_ratio = get_bbox_ratio(obj_id, intrinsics_array, extrinsics, all_bboxes)
         # import ipdb; ipdb.set_trace()
         if bbox_ratio < ctxt_trgt_upper_thred:
             ctxt_frames.append(raw_ctxt_frames[i])
     
     # Filter out all trgt images in which the target entity is not present
     for i in range(len(raw_trgt_frames)):
+        world_graph_path = os.path.join(room_path, "world_graph", f"{raw_trgt_frames[i]}.npy")
+        world_graph = np.load(world_graph_path, allow_pickle=True).item()
         # Read all images using imageio
         trgt_panoptic = imageio.v2.imread(os.path.join(panoptic_path, f"{raw_trgt_frames[i]}.png"))
         # Grab the agent's camera pose
@@ -207,6 +219,11 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         unique_obj_ids = [
             idx - 100 for idx in unique_obj_ids if idx != UNKNOWN_SEMANTIC_ID
         ]
+        # Get articulated furniture in the room
+        furns_in_room = world_graph.get_furniture_in_room(world_graph.get_room_for_entity(world_graph.get_human()))
+        furns_in_room = [furn for furn in furns_in_room if furn.sim_handle in ao_handle_to_id]
+        extra_furn_ids = [ao_handle_to_id[furn.sim_handle] for furn in furns_in_room]
+        unique_obj_ids += extra_furn_ids
         # Check if other entities with the same types as the ref and trgt are in the image
         obj_names = [object_id_to_name[one_obj_id] for one_obj_id in unique_obj_ids if one_obj_id in object_id_to_name]
         obj_clean_names = [clean_text(obj_name) for obj_name in obj_names]
@@ -226,7 +243,7 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         if len(obj_ids)==0:
             continue
         obj_id = obj_ids[0]
-        bbox_ratio = get_bbox_ratio(trgt_panoptic, obj_id, intrinsics_array, extrinsics, all_bboxes)
+        bbox_ratio = get_bbox_ratio(obj_id, intrinsics_array, extrinsics, all_bboxes)
         
         if ref_name in obj_names and len(obj_names)==2 and bbox_ratio > 1/2:    
             trgt_frames.append(raw_trgt_frames[i])
@@ -302,7 +319,6 @@ def save_segment(segment_dir, segment_data, ref_name, target_name, relationship)
     return True
 
 def get_bbox_ratio(
-    ctxt_panoptic,
     obj_id,
     intrinsics_array,
     extrinsics,
@@ -312,38 +328,12 @@ def get_bbox_ratio(
     This method uses the instance segmentation output to
     get the bbox ratio, measuring the visible area of the object.
     """
-    obj_mask = (ctxt_panoptic == (obj_id + 100)).astype(bool)
-
-    if obj_mask.ndim != 2:
-        obj_mask = obj_mask.squeeze()
-    
-    indices = np.argwhere(obj_mask)  # Find indices of True pixels
-
-    # Calculate bbox area
-    if indices.size > 0:
-        # Get the bounding box coordinates
-        y_min, x_min = indices.min(axis=0)
-        y_max, x_max = indices.max(axis=0)
-
-        # Calculate the width and height of the bounding box
-        width = x_max - x_min + 1
-        height = y_max - y_min + 1
-
-        # Calculate the area of the bounding box
-        bbox_area = width * height
-
-    else:
-        # If the mask is empty, set the area to 0
-        bbox_area = 0
-
-    # Calculate the projected mask bbox area
     local_aabb, global_transform = all_bboxes[obj_id]
-    
     # Compute the 2D bounding box area
     bbox = compute_2d_bbox_from_aabb(local_aabb, np.array(global_transform), np.array(intrinsics_array), np.array(extrinsics))
-    projected_bbox_area = bbox["area"]
-    assert projected_bbox_area > 0
-    bbox_ratio = bbox_area / projected_bbox_area
+    if bbox["area"] == np.inf:
+        bbox["area"] = 0
+    bbox_ratio = bbox["area"]/bbox["large_area"]
     return bbox_ratio
 
 def on_the_left(ref_camera_pose, obj, furniture, angle_thred):

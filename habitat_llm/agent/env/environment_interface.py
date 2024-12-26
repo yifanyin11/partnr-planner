@@ -24,6 +24,7 @@ from habitat_baselines.common.obs_transformers import (
 from habitat.sims.habitat_simulator.sim_utilities import (
     get_all_object_ids,
     get_bb_for_object_id,
+    get_all_articulated_object_ids,
 )
 
 # HABITAT
@@ -537,6 +538,15 @@ class EnvironmentInterface:
                         object_id_to_handle,
                     )
                     
+                    # save the simulator articulated object
+                    ao_id_to_handle = get_all_articulated_object_ids(self.sim)
+                    np.save(
+                        os.path.join(
+                            self.trajectory_save_paths[curr_agent], "ao_id_to_handle.npy"
+                        ),
+                        ao_id_to_handle,
+                    )
+
                     # save all bounding boxes
                     all_bb = {obj_id: get_bb_for_object_id(self.sim, obj_id) for obj_id in object_id_to_handle}
                     np.save(
