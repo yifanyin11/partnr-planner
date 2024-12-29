@@ -125,6 +125,7 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
     trgt_frames = []
     # Apply filters to the ctxt and trgt frames
     panoptic_path = os.path.join(room_path, "panoptic")
+    depth_path = os.path.join(room_path, "depth")
     # Read intrinsics
     intrinsics = np.load(os.path.join(room_path, "..", "intrinsics.npy"), allow_pickle=True)[0]
     intrinsics_array = get_instrinsic_matrix(intrinsics)
@@ -159,6 +160,8 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         world_graph = np.load(world_graph_path, allow_pickle=True).item()
         # Read all images using imageio
         ctxt_panoptic = imageio.v2.imread(os.path.join(panoptic_path, f"{raw_ctxt_frames[i]}.png"))
+        # Read depth using np.load
+        ctxt_depth = np.load(os.path.join(depth_path, f"{raw_ctxt_frames[i]}.npy"))
         # Grab the agent's camera pose
         extrinsics = np.linalg.inv(np.load(os.path.join(room_path, "pose", f"{raw_ctxt_frames[i]}.npy")))
         # Check if the target entity is present in the image
@@ -189,8 +192,11 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
             obj_id = obj_ids[0]
         else:
             continue
+        if obj_id in extra_furn_ids:
+            in_view = is_ao_in_view(obj_id, ctxt_depth, intrinsics_array, extrinsics, all_bboxes)
+            if not in_view:
+                continue
         bbox_ratio = get_bbox_ratio(obj_id, intrinsics_array, extrinsics, all_bboxes)
-        # import ipdb; ipdb.set_trace()
         if bbox_ratio < ctxt_ref_upper_thred:
             continue
         # make sure the target entity is not in the image
@@ -200,9 +206,11 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         else:
             ctxt_frames.append(raw_ctxt_frames[i])
             continue
-        # import ipdb; ipdb.set_trace()
+        # if obj_id in extra_furn_ids:
+        #     in_view = is_ao_in_view(obj_id, ctxt_depth, intrinsics_array, extrinsics, all_bboxes)
+        #     if in_view:
+        #         continue
         bbox_ratio = get_bbox_ratio(obj_id, intrinsics_array, extrinsics, all_bboxes)
-        # import ipdb; ipdb.set_trace()
         if bbox_ratio < ctxt_trgt_upper_thred:
             ctxt_frames.append(raw_ctxt_frames[i])
     
@@ -212,6 +220,8 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         world_graph = np.load(world_graph_path, allow_pickle=True).item()
         # Read all images using imageio
         trgt_panoptic = imageio.v2.imread(os.path.join(panoptic_path, f"{raw_trgt_frames[i]}.png"))
+        # Read depth using np.load
+        trgt_depth = np.load(os.path.join(depth_path, f"{raw_trgt_frames[i]}.npy"))
         # Grab the agent's camera pose
         extrinsics = np.linalg.inv(np.load(os.path.join(room_path, "pose", f"{raw_trgt_frames[i]}.npy")))
         # Check if the target entity is present in the image
@@ -243,6 +253,10 @@ def construct_segment_data(raw_ctxt_frames, raw_trgt_frames, ref_entity, target_
         if len(obj_ids)==0:
             continue
         obj_id = obj_ids[0]
+        if obj_id in extra_furn_ids:
+            in_view = is_ao_in_view(obj_id, trgt_depth, intrinsics_array, extrinsics, all_bboxes)
+            if not in_view:
+                continue
         bbox_ratio = get_bbox_ratio(obj_id, intrinsics_array, extrinsics, all_bboxes)
         
         if ref_name in obj_names and len(obj_names)==2 and bbox_ratio > 1/2:    
@@ -317,6 +331,72 @@ def save_segment(segment_dir, segment_data, ref_name, target_name, relationship)
     with open(desc_file, "w") as f:
         f.write(description)
     return True
+
+def find_depth_value(points_3d, intrinsics, extrinsics):
+    """Projects 3D points to the 2D image plane, conditionally flipping Z values."""
+    # Transform points from world to camera coordinates
+    points_camera = (extrinsics @ (np.hstack((points_3d, np.ones((points_3d.shape[0], 1))))).T).T
+    points_camera = points_camera[points_camera[:, 2] < 0]  # Filter out points behind the camera
+    if points_camera.shape[0] == 0:
+        return None, None
+    z_values = -points_camera[:, 2]  # Extract Z values
+    points_image = (intrinsics @ points_camera[:, :3].T).T  # Apply intrinsics
+    points_image = points_image[:, :2] / points_camera[:, 2:3]  # Normalize by depth (Z)
+    # x=width-x
+    points_image[:, 0] = intrinsics[0, 2] * 2 - points_image[:, 0]
+    return z_values, points_image
+
+def is_ao_in_view(obj_id, depth, intrinsics, extrinsics, all_bboxes):
+    """
+    Check if the articulated object is in the view of the camera.
+    """
+    local_aabb, global_transform = all_bboxes[obj_id]
+    # Get corners of the local AABB
+    corners_local = np.array([
+        np.array(local_aabb.front_bottom_left),
+        np.array(local_aabb.front_bottom_right),
+        np.array(local_aabb.front_top_left),
+        np.array(local_aabb.front_top_right),
+        np.array(local_aabb.back_bottom_left),
+        np.array(local_aabb.back_bottom_right),
+        np.array(local_aabb.back_top_left),
+        np.array(local_aabb.back_top_right),
+    ])
+    # Transform corners to global coordinates
+    corners_global = (np.array(global_transform) @ (np.hstack((corners_local, np.ones((corners_local.shape[0], 1))))).T).T[:, :3]
+    depth_values, points_image = find_depth_value(corners_global, intrinsics, extrinsics)
+    if depth_values is None:
+        return False
+    num_points = points_image.shape[0]
+    thred = num_points // 2
+    depth_min = np.min(depth_values)
+    depth_max = np.max(depth_values)
+    # For each point in points_image, check is there any point +-5 pixels around it (inclusive) has depth value within the range of depth_min and depth_max
+    valid_points = 0  # Counter for valid points
+    # Check each projected point in image space
+    for i in range(num_points):
+        u, v = int(points_image[i, 0]), int(points_image[i, 1])  # Pixel coordinates
+        # Ensure pixel coordinates are within image bounds
+        if u < 0 or v < 0 or u >= depth.shape[1] or v >= depth.shape[0]:
+            continue
+        # Check surrounding pixels (±2 pixels) for valid depth values
+        for du in range(-2, 3):
+            for dv in range(-2, 3):
+                u_neighbor = u + du
+                v_neighbor = v + dv
+                # Ensure neighbor is within image bounds
+                if u_neighbor < 0 or v_neighbor < 0 or u_neighbor >= depth.shape[1] or v_neighbor >= depth.shape[0]:
+                    continue
+                # Check if depth is within range
+                neighbor_depth = depth[v_neighbor, u_neighbor]
+                if depth_min <= neighbor_depth <= depth_max:
+                    valid_points += 1
+                    break  # Break inner loop if a valid neighbor is found
+            else:
+                continue  # Continue if inner loop wasn't broken
+            break  # Break outer loop if a valid neighbor is found
+    # Check if valid points meet the threshold
+    return valid_points >= thred
 
 def get_bbox_ratio(
     obj_id,
@@ -458,7 +538,6 @@ def generate_segments(data_root, new_root):
             # Load object and furniture metadata
             all_objects = np.load(all_objects_path, allow_pickle=True)
             all_furnitures = np.load(all_furnitures_path, allow_pickle=True)
-            # import ipdb; ipdb.set_trace()
 
             # Load the world graph
             world_graph = load_world_graph(world_graph_path)
